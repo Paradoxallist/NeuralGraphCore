@@ -1,6 +1,7 @@
 """Integrate-and-fire neuron used for stateful network dynamics."""
 
 from dataclasses import dataclass
+from typing import cast
 
 from ..step_state import StatefulStepState
 from .base import Neuron, NeuronUpdate
@@ -55,7 +56,7 @@ class StatefulNeuron(Neuron):
         *,
         id: str,
         threshold: float = 1.0,
-        retention: float = 0.0,
+        retention: float = 1.0,
         reset: ResetRule | None = None,
         potential: float = 0.0,
         spike: int = 0,
@@ -165,10 +166,13 @@ class StatefulNeuron(Neuron):
         )
 
     def apply_update(self, update: NeuronUpdate) -> None:
-        """Commit a state validated by ``prepare_update``."""
-        state = update.internal_state
-        if not isinstance(state, StatefulInternalState):
-            raise TypeError("StatefulNeuron requires StatefulInternalState")
+        """Commit a state that was fully validated by ``prepare_update``.
+
+        This method deliberately performs no runtime validation. The
+        prepare/apply contract guarantees that an update returned by this
+        neuron's ``prepare_update`` is safe to commit.
+        """
+        state = cast(StatefulInternalState, update.internal_state)
         super().apply_update(update)
         self._potential = state.potential
         self._spike = state.spike

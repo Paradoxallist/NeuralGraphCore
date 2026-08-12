@@ -10,6 +10,11 @@ physics. It answers:
 Each neuron exposes a read-only `output: float`, which is the only value a
 synapse transmits.
 
+`Neuron.output` means the value transmitted through outgoing synapses. The
+property exists on every neuron type and is not synonymous with the
+`OutputNeuron` class. `OutputNeuron` names a sink-only network role; `output`
+names the common transmission value.
+
 | Neuron | Internal/public state | Synaptic output |
 |---|---|---|
 | `InputNeuron` | analog `value: float` | the analog value |
@@ -32,6 +37,9 @@ Its configuration is:
 - exactly one `ResetRule`;
 - initial finite `potential`;
 - initial binary integer `spike` in `{0, 1}`.
+
+The default retention is `1.0`. This is the neutral accumulation behavior:
+potential does not decay unless the user explicitly selects `retention < 1.0`.
 
 Initial potential and spike are independent committed values. An initial spike
 of 1 does not require the initial potential to equal or exceed the threshold.
@@ -247,7 +255,12 @@ weights, and initial committed spikes A=1 and B=0:
 
 All calculations and validation belong in `prepare_update`. The contract is:
 
-> A valid `NeuronUpdate` returned by `prepare_update` must be safe to commit.
+> If `prepare_update()` successfully returns its valid `NeuronUpdate`, the
+> corresponding `apply_update()` must not unexpectedly fail.
+
+Consequently, preparation performs all reasonable validation of future state,
+while application performs only simple assignments of already validated data.
+The library does not implement a complex transactional rollback system.
 
 If input validation, aggregation, or any preparation fails, no neuron update is
 committed, the runner tick does not advance, and the network retains its pre-
@@ -265,6 +278,15 @@ snapshots:
 `StepResult.states` contains every neuron. `StepResult.outputs` contains the
 full `StatefulStepState` for each output-role neuron. Later ticks cannot change
 an earlier result.
+
+For `StatefulStepState`:
+
+- `candidate` is potential before threshold evaluation and reset;
+- `spike` is the result of the threshold decision;
+- `potential` is the retained potential after any reset.
+
+With subtractive reset, candidate `1.4`, and threshold `1.0`, the resulting
+snapshot has spike `1` and potential `0.4`.
 
 ## run
 

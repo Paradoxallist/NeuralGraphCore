@@ -1,6 +1,7 @@
 """Autonomous internal neuron that produces periodic binary spikes."""
 
 from dataclasses import dataclass
+from typing import cast
 
 from ..step_state import PulsatingStepState
 from .base import Neuron, NeuronUpdate
@@ -123,10 +124,8 @@ class PulsatingNeuron(Neuron):
         )
 
     def apply_update(self, update: NeuronUpdate) -> None:
-        """Commit a binary pulse and timer validated by ``prepare_update``."""
-        state = update.internal_state
-        if not isinstance(state, PulsatingInternalState):
-            raise TypeError("PulsatingNeuron requires PulsatingInternalState")
+        """Commit a binary pulse and timer fully validated during preparation."""
+        state = cast(PulsatingInternalState, update.internal_state)
         super().apply_update(update)
         self._spike = state.spike
         self._ticks_since_spike = state.ticks_since_spike

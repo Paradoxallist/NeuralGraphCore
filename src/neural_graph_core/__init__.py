@@ -24,6 +24,8 @@ Classes can be imported directly from the package::
     result = runner.step(inputs={"sensor": 1.0})
 """
 
+__version__ = "0.0.1"
+
 from .neurons import (
     FixedResidualReset,
     HardReset,

@@ -1,5 +1,13 @@
 # NeuralGraphCore
 
+Current package version: **0.0.1** (release/tag form: `v0.0.1`).
+
+```python
+import neural_graph_core
+
+print(neural_graph_core.__version__)  # 0.0.1
+```
+
 NeuralGraphCore is a small, deterministic, pure-Python simulation core for
 stateful graph-based and recurrent neural networks. It provides integrate-and-
 fire neurons, analog environment inputs, binary internal signaling, directed
@@ -37,7 +45,8 @@ python -m pip install -e /path/to/NeuralGraphCore
 Run the regression suite with:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pip install -e ".[test]"
+python -m pytest
 ```
 
 ## Basic network
@@ -90,6 +99,9 @@ new internal spike is transmitted only during the following tick.
 candidate = previous_potential * retention + incoming_signal
 spike = 1 if candidate >= threshold else 0
 ```
+
+The default retention is `1.0`, so potential accumulates without implicit
+decay. Set `retention < 1.0` explicitly when decay is desired.
 
 When no spike occurs, `potential` becomes `candidate`. After a spike, the
 configured reset rule selects the retained potential. A neuron emits at most
@@ -145,6 +157,11 @@ contribution = source.output * synapse.weight
 - `StatefulNeuron.output` and `OutputNeuron.output` are binary `0.0` or `1.0`.
 - `PulsatingNeuron.output` is a binary `0.0` or `1.0`.
 
+`Neuron.output` means “the value transmitted through outgoing synapses.” It is
+available on every neuron type and is unrelated to the sink-only class named
+`OutputNeuron`. A stateful neuron's `potential` is internal and is never
+transmitted directly.
+
 Synapse endpoints never change because `(source_id, target_id)` is its network
 key. Weight and enabled state can be edited between ticks:
 
@@ -192,6 +209,15 @@ print(hidden_state.spike)
 output_state = result.outputs["action"]
 print(output_state.potential, output_state.spike)
 ```
+
+The fields have distinct meanings:
+
+- `candidate` is potential before threshold evaluation and reset;
+- `spike` is the binary threshold-decision result;
+- `potential` is the retained value after any reset.
+
+For example, subtractive reset with candidate `1.4` and threshold `1.0`
+produces `spike == 1` and `potential == 0.4`.
 
 Snapshot types are `InputStepState`, `StatefulStepState`, and
 `PulsatingStepState`. `StepResult.outputs` contains full stateful snapshots for

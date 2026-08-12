@@ -37,3 +37,11 @@ transmit its potential through synapses.
 `Synapse.source_id` and `target_id` are immutable network keys. `weight` and
 `enabled` are intentionally mutable with validation and may be edited between
 ticks.
+
+Use `pytest` for the regression suite. Keep analytically verifiable reference
+networks in `tests/test_reference_networks.py` and run the full suite after any
+semantic change.
+
+The canonical package version follows PEP 440 (currently `0.0.1`) and is
+exposed as `neural_graph_core.__version__`. Git release tags may use the
+corresponding `v0.0.1` form.

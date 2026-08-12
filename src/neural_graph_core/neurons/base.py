@@ -30,9 +30,11 @@ class NeuronUpdate:
 class Neuron(ABC):
     """Base contract implemented by every neuron.
 
-    ``output`` is the single signal transmitted by outgoing synapses. Input
-    neurons expose an analog float. All built-in internal neurons expose a
-    binary signal represented as ``0.0`` or ``1.0``.
+    ``output`` is the value this neuron transmits through its outgoing
+    synapses. It is unrelated to the ``OutputNeuron`` class name. Input neurons
+    expose an analog float. All built-in internal neurons expose a binary
+    signal represented as ``0.0`` or ``1.0``. Internal potential is never an
+    output and is never transmitted directly.
 
     Args:
         id: Non-empty identifier that must be unique within one network.
@@ -55,7 +57,11 @@ class Neuron(ABC):
 
     @property
     def output(self) -> float:
-        """Return the currently committed signal transmitted by synapses."""
+        """Return the committed value transmitted by outgoing synapses.
+
+        This property exists on every neuron type and must not be confused
+        with the sink-only ``OutputNeuron`` class.
+        """
         return self._output
 
     @property
@@ -87,7 +93,12 @@ class Neuron(ABC):
         raise NotImplementedError
 
     def apply_update(self, update: NeuronUpdate) -> None:
-        """Commit the validated public output of a prepared update."""
+        """Commit output already validated by ``prepare_update``.
+
+        The runner passes only the update returned by this neuron's successful
+        preparation. Implementations must keep commit simple and non-failing
+        for such valid updates.
+        """
         self._output = update.output
 
     def reset(self) -> None:
