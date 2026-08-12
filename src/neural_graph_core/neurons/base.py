@@ -102,5 +102,5 @@ class Neuron(ABC):
         self._output = update.output
 
     def reset(self) -> None:
-        """Restore the constructor-provided public output."""
+        """Restore the currently configured initial public output."""
         self._output = self._initial_output

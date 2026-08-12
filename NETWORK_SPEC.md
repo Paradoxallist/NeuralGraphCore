@@ -162,6 +162,61 @@ source.output * weight
 - A self-loop is an ordinary synapse.
 - Parallel synapses for the same ordered pair are forbidden.
 
+## Live mutation semantics
+
+Public mutation operations are intended to run between ticks. A successful
+change affects the next tick and never implicitly calls `reset()` on a neuron
+or runner.
+
+The API distinguishes:
+
+- **configuration**, which controls future calculations;
+- **current dynamic state**, which is committed now;
+- **initial/reset state**, which is restored by `reset()`.
+
+### StatefulNeuron and OutputNeuron
+
+The validated configuration properties `threshold`, `retention`, and
+`reset_rule` are mutable. Changing one preserves current potential/spike and
+the initial reset target.
+
+`set_state(potential=..., spike=...)` atomically changes only current state.
+Either argument may be omitted. Potential must be finite; spike must be integer
+0 or 1. Changing spike also sets `output = float(spike)` in the same operation.
+Potential and spike remain independent.
+
+`set_initial_state(potential=..., spike=...)` atomically changes only the reset
+target. `set_initial_state_from_current()` copies current potential and spike
+to that target. Neither operation implicitly resets current state.
+
+`OutputNeuron` inherits these APIs without changing its sink-only topology
+rules.
+
+### PulsatingNeuron
+
+`configure_timer(period_ticks=..., ticks_since_spike=...,
+initial_ticks_since_spike=...)` atomically validates the resulting period,
+current phase, and initial phase before assigning any of them. Omitted values
+are preserved. Both phases must satisfy:
+
+```text
+0 <= phase < resulting period_ticks
+```
+
+An incompatible period change raises an error and leaves all three values
+unchanged. No hidden clamp or modulo is performed.
+
+`set_state(spike=..., ticks_since_spike=...)` changes only current state and
+synchronizes `output` with spike. `set_initial_state(...)` changes only the
+reset target. `set_initial_state_from_current()` copies the current binary
+spike and timer phase to the reset target.
+
+### Immutable fields
+
+Neuron IDs, synapse endpoints, and `NetworkRunner.tick` remain read-only.
+Changing a synapse endpoint continues to mean disconnecting the old synapse and
+connecting a new one.
+
 ## Synchronous tick phases
 
 `NetworkRunner.step(inputs)` follows these phases.
@@ -296,16 +351,16 @@ fails; the failing tick itself is atomic.
 
 ## Reset
 
-`NetworkRunner.reset()` restores dynamic state:
+`NetworkRunner.reset()` restores configured initial dynamic state:
 
 - runner tick becomes 0;
-- input values return to constructor-provided initial values;
-- stateful/output potential and spike return to constructor-provided values;
-- pulsating spike and local timer return to constructor-provided values.
+- input values return to their constructor-provided initial values;
+- stateful/output potential and spike return to their current initial targets;
+- pulsating spike and local timer return to their current initial targets.
 
 It preserves neuron identities, topology, current synapse weights and enabled
 flags, thresholds, retention values, reset rules, and periods. Constructor-
-provided dynamic state need not be zero.
+configured initial dynamic state need not be zero.
 
 ## Network invariants
 
@@ -315,4 +370,4 @@ provided dynamic state need not be zero.
 - Input and pulsating neurons cannot receive synapses.
 - Output neurons cannot emit synapses.
 - Removing a neuron removes all connected synapses.
-- Structural changes and synapse edits occur between ticks.
+- Structural changes, neuron mutations, and synapse edits occur between ticks.

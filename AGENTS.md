@@ -42,6 +42,16 @@ Use `pytest` for the regression suite. Keep analytically verifiable reference
 networks in `tests/test_reference_networks.py` and run the full suite after any
 semantic change.
 
-The canonical package version follows PEP 440 (currently `0.0.1`) and is
+The canonical package version follows PEP 440 (currently `0.0.2`) and is
 exposed as `neural_graph_core.__version__`. Git release tags may use the
-corresponding `v0.0.1` form.
+corresponding `v0.0.2` form.
+
+Live mutation APIs are a core public contract. Mutations are intended between
+ticks, affect subsequent ticks, and must not trigger implicit reset. Preserve
+the distinction between configuration, current committed dynamic state, and
+the independently configurable initial state restored by `reset()`.
+
+State mutation must be atomic and keep each binary `spike` synchronized with
+its floating-point synaptic `output`. Pulsating timer changes must validate the
+resulting period, current phase, and initial phase before assigning any value;
+never introduce implicit clamp or modulo behavior.

@@ -39,6 +39,10 @@ class StatefulNeuron(Neuron):
         potential: Initial finite potential restored by ``reset``.
         spike: Initial committed binary output restored by ``reset``. It is
             intentionally independent of the initial potential and threshold.
+
+    Configuration can be edited through validated property setters between
+    ticks. ``set_state`` edits current committed state, while
+    ``set_initial_state`` edits the independent state restored by ``reset``.
     """
 
     __slots__ = (
@@ -87,15 +91,44 @@ class StatefulNeuron(Neuron):
         """Return the positive firing threshold."""
         return self._threshold
 
+    @threshold.setter
+    def threshold(self, value: float) -> None:
+        """Set the positive finite threshold used by subsequent ticks.
+
+        Changing this configuration preserves current and initial state.
+        """
+        converted = finite_float(value, "threshold")
+        if converted <= 0.0:
+            raise ValueError("threshold must be positive")
+        self._threshold = converted
+
     @property
     def retention(self) -> float:
         """Return the fraction of potential retained between ticks."""
         return self._retention
 
+    @retention.setter
+    def retention(self, value: float) -> None:
+        """Set the finite retention fraction used by subsequent ticks.
+
+        Changing this configuration does not modify accumulated potential.
+        """
+        converted = finite_float(value, "retention")
+        if not 0.0 <= converted <= 1.0:
+            raise ValueError("retention must be in [0, 1]")
+        self._retention = converted
+
     @property
     def reset_rule(self) -> ResetRule:
         """Return the configured post-spike potential reset rule."""
         return self._reset_rule
+
+    @reset_rule.setter
+    def reset_rule(self, value: ResetRule) -> None:
+        """Set the reset rule used by subsequent threshold crossings."""
+        if not isinstance(value, ResetRule):
+            raise TypeError("reset_rule must implement ResetRule")
+        self._reset_rule = value
 
     @property
     def potential(self) -> float:
@@ -106,6 +139,75 @@ class StatefulNeuron(Neuron):
     def spike(self) -> int:
         """Return the currently committed binary output as integer 0 or 1."""
         return self._spike
+
+    @property
+    def initial_potential(self) -> float:
+        """Return the potential restored by ``reset``."""
+        return self._initial_potential
+
+    @property
+    def initial_spike(self) -> int:
+        """Return the binary spike restored by ``reset``."""
+        return self._initial_spike
+
+    def set_state(
+        self,
+        *,
+        potential: float | None = None,
+        spike: int | None = None,
+    ) -> None:
+        """Atomically edit only the current committed dynamic state.
+
+        Omitted values preserve their current counterparts. The reset target is
+        not changed. Potential and spike remain independent values.
+
+        Raises:
+            ValueError: If no value is supplied or a value is invalid.
+        """
+        if potential is None and spike is None:
+            raise ValueError("set_state requires potential or spike")
+        next_potential = (
+            self._potential
+            if potential is None
+            else finite_float(potential, "potential")
+        )
+        next_spike = self._spike if spike is None else binary_spike(spike)
+
+        self._potential = next_potential
+        self._spike = next_spike
+        self._output = float(next_spike)
+
+    def set_initial_state(
+        self,
+        *,
+        potential: float | None = None,
+        spike: int | None = None,
+    ) -> None:
+        """Atomically edit only the state restored by ``reset``.
+
+        Omitted values preserve their existing reset targets. Current dynamic
+        state is not changed until ``reset`` is called.
+        """
+        if potential is None and spike is None:
+            raise ValueError("set_initial_state requires potential or spike")
+        next_potential = (
+            self._initial_potential
+            if potential is None
+            else finite_float(potential, "potential")
+        )
+        next_spike = (
+            self._initial_spike if spike is None else binary_spike(spike)
+        )
+
+        self._initial_potential = next_potential
+        self._initial_spike = next_spike
+        self._initial_output = float(next_spike)
+
+    def set_initial_state_from_current(self) -> None:
+        """Use the current potential and spike as the future reset target."""
+        self._initial_potential = self._potential
+        self._initial_spike = self._spike
+        self._initial_output = float(self._spike)
 
     @property
     def role(self) -> NeuronRole:
@@ -178,7 +280,7 @@ class StatefulNeuron(Neuron):
         self._spike = state.spike
 
     def reset(self) -> None:
-        """Restore the constructor-provided potential and binary spike."""
+        """Restore the currently configured initial potential and spike."""
         super().reset()
         self._potential = self._initial_potential
         self._spike = self._initial_spike

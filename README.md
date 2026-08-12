@@ -1,11 +1,11 @@
 # NeuralGraphCore
 
-Current package version: **0.0.1** (release/tag form: `v0.0.1`).
+Current package version: **0.0.2** (release/tag form: `v0.0.2`).
 
 ```python
 import neural_graph_core
 
-print(neural_graph_core.__version__)  # 0.0.1
+print(neural_graph_core.__version__)  # 0.0.2
 ```
 
 NeuralGraphCore is a small, deterministic, pure-Python simulation core for
@@ -238,10 +238,78 @@ runner.reset()
 `run(sequence)` is equivalent to successive `step` calls. Missing known input
 values become `0.0`; unknown IDs are errors.
 
-`reset()` restores the runner tick counter and each neuron's constructor-
-provided dynamic state, including potential, spike, input value, and pulsating
-timer phase. It does not change topology, weights, enabled flags, thresholds,
-retention values, reset rules, or periods.
+`reset()` restores the runner tick counter and each neuron's configured initial
+dynamic state, including potential, spike, input value, and pulsating timer
+phase. Initial state starts from constructor values but can be changed through
+the explicit APIs described below. Reset does not change topology, weights,
+enabled flags, thresholds, retention values, reset rules, or periods.
+
+## Live mutation
+
+Public mutation APIs are intended to be called between ticks. A successful
+change is used by the next `step()` and never triggers an implicit reset.
+
+Three concepts remain separate:
+
+- **configuration** controls future calculations;
+- **current dynamic state** is the state committed now;
+- **initial state** is the target restored by `reset()`.
+
+### Stateful and output neurons
+
+```python
+neuron.threshold = 1.5
+neuron.retention = 0.8
+neuron.reset_rule = PercentageReset(0.5)
+
+neuron.set_state(potential=0.75, spike=1)
+neuron.set_initial_state(potential=0.3, spike=0)
+neuron.set_initial_state_from_current()
+```
+
+Configuration setters preserve both current and initial state. `set_state`
+changes only current committed state and keeps `spike` synchronized with
+`output`. `set_initial_state` changes only the future reset target.
+`OutputNeuron` inherits this complete API.
+
+### Pulsating neurons
+
+Timer configuration is atomic because period and phase are related:
+
+```python
+clock.configure_timer(
+    period_ticks=5,
+    ticks_since_spike=2,
+    initial_ticks_since_spike=1,
+)
+
+clock.set_state(spike=1, ticks_since_spike=3)
+clock.set_initial_state(spike=0, ticks_since_spike=1)
+clock.set_initial_state_from_current()
+```
+
+Both current and initial phases must be valid for the resulting period. An
+invalid combination raises an error without changing anything; phases are
+never silently clamped or reduced modulo the period.
+
+### Editing a running network
+
+```python
+neuron = StatefulNeuron(id="a", threshold=1.0, retention=1.0)
+
+runner.step(...)
+
+neuron.threshold = 1.5
+neuron.set_state(potential=0.7)
+
+runner.step(...)
+
+neuron.set_initial_state_from_current()
+```
+
+The same between-tick rule applies to mutable `Synapse.weight` and
+`Synapse.enabled`. IDs, synapse endpoints, and `NetworkRunner.tick` remain
+read-only.
 
 ## Graph API
 
