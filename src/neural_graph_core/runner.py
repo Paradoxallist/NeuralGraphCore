@@ -7,6 +7,7 @@ from .network import Network
 from .neurons import Neuron
 from .neurons.base import NeuronUpdate
 from .step_result import StepResult
+from .step_state import NeuronStepState, StatefulStepState
 from .synapses import Synapse
 
 
@@ -67,7 +68,7 @@ class NetworkRunner:
                 mapping.
 
         Returns:
-            A read-only snapshot of all states and output states after commit.
+            Typed read-only snapshots for every neuron and output neuron.
 
         Raises:
             TypeError: If ``inputs`` is not a mapping.
@@ -101,7 +102,7 @@ class NetworkRunner:
             neuron.apply_update(updates[neuron.id])
 
         self._tick += 1
-        return self._create_result(neurons)
+        return self._create_result(neurons, updates)
 
     def run(
         self,
@@ -169,7 +170,7 @@ class NetworkRunner:
                 external_input=inputs.get(neuron.id, 0.0)
             )
             updates[neuron.id] = update
-            signals[neuron.id] = update.state
+            signals[neuron.id] = update.output
         return updates, signals
 
     @staticmethod
@@ -178,7 +179,7 @@ class NetworkRunner:
         synapses: tuple[Synapse, ...],
         input_signals: Mapping[str, float],
     ) -> dict[str, float]:
-        """Aggregate enabled signals using current inputs and old inner states."""
+        """Aggregate current input values and previous internal outputs."""
         weighted_inputs = {neuron.id: 0.0 for neuron in neurons}
         neurons_by_id = {neuron.id: neuron for neuron in neurons}
 
@@ -186,19 +187,25 @@ class NetworkRunner:
             if not synapse.enabled:
                 continue
             source = neurons_by_id[synapse.source_id]
-            source_state = (
+            source_output = (
                 input_signals[source.id]
                 if source.role == "input"
-                else source.state
+                else source.output
             )
-            weighted_inputs[synapse.target_id] += source_state * synapse.weight
+            weighted_inputs[synapse.target_id] += source_output * synapse.weight
         return weighted_inputs
 
-    def _create_result(self, neurons: tuple[Neuron, ...]) -> StepResult:
-        """Create detached read-only state snapshots after a successful commit."""
-        states = {neuron.id: neuron.state for neuron in neurons}
-        outputs = {
-            neuron.id: neuron.state
+    def _create_result(
+        self,
+        neurons: tuple[Neuron, ...],
+        updates: Mapping[str, NeuronUpdate],
+    ) -> StepResult:
+        """Create detached typed snapshots from the committed updates."""
+        states: dict[str, NeuronStepState] = {
+            neuron.id: updates[neuron.id].step_state for neuron in neurons
+        }
+        outputs: dict[str, StatefulStepState] = {
+            neuron.id: updates[neuron.id].step_state
             for neuron in neurons
             if neuron.role == "output"
         }

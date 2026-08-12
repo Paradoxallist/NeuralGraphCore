@@ -47,8 +47,8 @@ class Network:
     def neurons(self) -> Mapping[str, Neuron]:
         """Return a read-only view of neurons indexed by identifier.
 
-        The mapping itself cannot be changed by the caller. Neuron state may
-        still change later through the network runner.
+        The mapping itself cannot be changed by the caller. Neuron dynamic
+        state may still change later through the network runner.
         """
         return MappingProxyType(self._neurons)
 

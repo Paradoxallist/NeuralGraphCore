@@ -3,26 +3,23 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .step_state import NeuronStepState, StatefulStepState
+
 
 @dataclass(frozen=True, slots=True)
 class StepResult:
-    """Snapshot returned after a synchronous network update.
+    """Typed diagnostic snapshot returned after a successful tick.
 
-    Args:
-        tick: Number of completed ticks. The first call to ``step`` returns 1.
-        states: State of every neuron after the update, indexed by neuron ID.
-        outputs: State of every neuron whose role is ``output``.
+    Attributes:
+        tick: Number of successfully completed ticks.
+        states: Snapshot for every neuron indexed by ID. Input, stateful, and
+            pulsating neurons expose different immutable snapshot types.
+        outputs: Full integrate-and-fire snapshots for output-role neurons.
 
-    Both mappings are read-only snapshots. Later network updates do not change
-    a previously returned result.
-
-    Example:
-        Read a network output after a step::
-
-            result = runner.step(inputs={"sensor": 1.0})
-            action = result.outputs["action"]
+    The mappings are detached and read-only. Later ticks cannot change a
+    previously returned result.
     """
 
     tick: int
-    states: Mapping[str, float]
-    outputs: Mapping[str, float]
+    states: Mapping[str, NeuronStepState]
+    outputs: Mapping[str, StatefulStepState]

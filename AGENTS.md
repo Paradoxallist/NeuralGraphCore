@@ -26,3 +26,14 @@ Keep public docstrings and repository documentation in English. Preserve the
 separation between dynamic state and static topology/configuration, and keep
 new public fields encapsulated behind read-only properties unless mutability is
 an explicit part of the API design.
+
+The core signal model is asymmetric by design: `InputNeuron` is an analog
+current-tick source, while every built-in internal neuron transmits a binary
+previously committed spike. `StatefulNeuron` and `OutputNeuron` use the
+integrate-and-fire equations and reset rules defined in `NETWORK_SPEC.md`.
+Do not restore generic activation-callable behavior to `StatefulNeuron` or
+transmit its potential through synapses.
+
+`Synapse.source_id` and `target_id` are immutable network keys. `weight` and
+`enabled` are intentionally mutable with validation and may be edited between
+ticks.

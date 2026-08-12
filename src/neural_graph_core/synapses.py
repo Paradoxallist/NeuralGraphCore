@@ -4,30 +4,15 @@ from math import isfinite
 
 
 class Synapse:
-    """An immutable directed connection between two neurons.
+    """A directed connection with immutable endpoints and mutable controls.
 
-    A future network runner will calculate the transmitted signal as::
+    ``source_id`` and ``target_id`` cannot change because their ordered pair is
+    the key used by ``Network``. ``weight`` and ``enabled`` may be changed
+    between ticks through validated property setters.
 
-        source.state * weight
-
-    ``source_id`` and ``target_id`` form a unique key, so a network permits at
-    most one synapse between an ordered pair of neurons. A self-loop is valid,
-    which means both identifiers may be equal.
-
-    Args:
-        source_id: Identifier of the neuron sending the signal.
-        target_id: Identifier of the neuron receiving the signal.
-        weight: Finite multiplier applied to the source state.
-        enabled: Whether the synapse participates in signal propagation.
-
-    Example:
-        Connect an input to a hidden neuron::
-
-            synapse = Synapse(
-                source_id="sensor",
-                target_id="hidden",
-                weight=0.5,
-            )
+    The transmitted contribution is ``source.output * weight`` when enabled,
+    otherwise zero. Input neurons provide analog outputs; all built-in internal
+    neurons provide binary outputs.
     """
 
     __slots__ = ("_source_id", "_target_id", "_weight", "_enabled")
@@ -44,61 +29,62 @@ class Synapse:
             raise ValueError("source_id must be a non-empty string")
         if not isinstance(target_id, str) or not target_id:
             raise ValueError("target_id must be a non-empty string")
-        converted_weight = float(weight)
-        if not isfinite(converted_weight):
-            raise ValueError("weight must be finite")
-        if not isinstance(enabled, bool):
-            raise TypeError("enabled must be a boolean")
-
         self._source_id = source_id
         self._target_id = target_id
-        self._weight = converted_weight
-        self._enabled = enabled
+        self._weight = self._validate_weight(weight)
+        self._enabled = self._validate_enabled(enabled)
 
     @property
     def source_id(self) -> str:
-        """Return the identifier of the source neuron."""
+        """Return the immutable source-neuron identifier."""
         return self._source_id
 
     @property
     def target_id(self) -> str:
-        """Return the identifier of the target neuron."""
+        """Return the immutable target-neuron identifier."""
         return self._target_id
 
     @property
     def weight(self) -> float:
-        """Return the multiplier applied to the source state."""
+        """Return the current finite signal multiplier."""
         return self._weight
+
+    @weight.setter
+    def weight(self, value: float) -> None:
+        """Set any finite weight without imposing an artificial range."""
+        self._weight = self._validate_weight(value)
 
     @property
     def enabled(self) -> bool:
-        """Return whether the synapse participates in signal propagation."""
+        """Return whether this connection currently transmits a signal."""
         return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        """Enable or disable transmission while preserving the connection."""
+        self._enabled = self._validate_enabled(value)
 
     @property
     def key(self) -> tuple[str, str]:
-        """Return ``(source_id, target_id)`` for network indexing."""
+        """Return the immutable ordered endpoint pair used by ``Network``."""
         return self._source_id, self._target_id
 
+    @staticmethod
+    def _validate_weight(value: float) -> float:
+        converted = float(value)
+        if not isfinite(converted):
+            raise ValueError("weight must be finite")
+        return converted
+
+    @staticmethod
+    def _validate_enabled(value: bool) -> bool:
+        if not isinstance(value, bool):
+            raise TypeError("enabled must be a boolean")
+        return value
+
     def __repr__(self) -> str:
-        """Return a constructor-like representation useful for debugging."""
         return (
             f"Synapse(source_id={self._source_id!r}, "
             f"target_id={self._target_id!r}, weight={self._weight!r}, "
             f"enabled={self._enabled!r})"
         )
-
-    def __eq__(self, other: object) -> bool:
-        """Compare synapses by endpoints, weight, and enabled state."""
-        if not isinstance(other, Synapse):
-            return NotImplemented
-        return (
-            self._source_id == other._source_id
-            and self._target_id == other._target_id
-            and self._weight == other._weight
-            and self._enabled == other._enabled
-        )
-
-    def __hash__(self) -> int:
-        """Return a stable hash because every stored field is read-only."""
-        return hash((self._source_id, self._target_id, self._weight, self._enabled))

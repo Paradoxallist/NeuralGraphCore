@@ -2,94 +2,66 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from math import isfinite
 
+from ..step_state import NeuronStepState
+from .base_values import finite_float
 from .roles import NeuronRole
-
-
-def finite_float(value: float, name: str) -> float:
-    """Convert a numeric value to a finite float.
-
-    Args:
-        value: Numeric value to validate.
-        name: Parameter name used in error messages.
-
-    Returns:
-        The value converted to ``float``.
-
-    Raises:
-        TypeError: If the value cannot be converted to ``float``.
-        ValueError: If the converted value is NaN or infinite.
-    """
-    converted = float(value)
-    if not isfinite(converted):
-        raise ValueError(f"{name} must be finite")
-    return converted
 
 
 @dataclass(frozen=True, slots=True)
 class NeuronUpdate:
-    """A prepared state change used during a synchronous network update.
+    """A fully validated state change prepared for synchronous commit.
 
-    A network runner first prepares an update for every neuron and only then
-    applies all updates. This prevents one neuron from observing another
-    neuron's state from the new tick while the current tick is still running.
+    ``prepare_update`` must validate every value placed in this object. A valid
+    update returned by ``prepare_update`` must be safe for ``apply_update`` to
+    commit without performing calculations that may fail.
 
     Attributes:
-        state: Public neuron value for the next tick.
-        internal_state: Optional implementation-specific state. For example,
-            ``PulsatingNeuron`` uses it for its next local timer value.
+        output: Signal exposed by the neuron after commit.
+        internal_state: Private implementation-specific state to commit.
+        step_state: Immutable public diagnostic snapshot for ``StepResult``.
     """
 
-    state: float
-    internal_state: object | None = None
+    output: float
+    internal_state: object | None
+    step_state: NeuronStepState
 
 
 class Neuron(ABC):
     """Base contract implemented by every neuron.
 
-    The constructor stores values privately. Read access is provided through
-    properties, while state changes are restricted to ``apply_update`` and
-    ``reset``. This keeps a future ``Network`` in control of synchronous state
-    transitions.
+    ``output`` is the single signal transmitted by outgoing synapses. Input
+    neurons expose an analog float. All built-in internal neurons expose a
+    binary signal represented as ``0.0`` or ``1.0``.
 
     Args:
-        id: Non-empty identifier. It must be unique within one network. The
-            future ``Network.add_neuron`` method will enforce this because the
-            neuron itself does not know which network owns it.
-        state: Initial public output value and the value restored by ``reset``.
-
-    Example:
-        Create a concrete implementation rather than the abstract base class::
-
-            neuron = StatefulNeuron(id="memory", state=0.25)
-            assert neuron.id == "memory"
-            assert neuron.state == 0.25
+        id: Non-empty identifier that must be unique within one network.
+        output: Initial signal restored by ``reset``.
     """
 
-    __slots__ = ("_id", "_state", "_initial_state")
+    __slots__ = ("_id", "_output", "_initial_output")
 
-    def __init__(self, *, id: str, state: float = 0.0) -> None:
+    def __init__(self, *, id: str, output: float = 0.0) -> None:
         if not isinstance(id, str) or not id:
             raise ValueError("id must be a non-empty string")
         self._id = id
-        self._state = finite_float(state, "state")
-        self._initial_state = self._state
+        self._output = finite_float(output, "output")
+        self._initial_output = self._output
 
     @property
     def id(self) -> str:
-        """Return the identifier used by a network and its synapses."""
+        """Return the identifier used by the network and synapses."""
         return self._id
 
     @property
-    def state(self) -> float:
-        """Return the current public output value of the neuron."""
-        return self._state
+    def output(self) -> float:
+        """Return the currently committed signal transmitted by synapses."""
+        return self._output
 
     @property
     @abstractmethod
     def role(self) -> NeuronRole:
-        """Return the semantic role used by a network to classify the neuron."""
+        """Return the semantic role used to classify the neuron."""
         raise NotImplementedError
 
     @property
@@ -111,30 +83,13 @@ class Neuron(ABC):
         weighted_input: float = 0.0,
         external_input: float | None = None,
     ) -> NeuronUpdate:
-        """Calculate the next state without mutating the neuron.
-
-        Args:
-            weighted_input: Sum of signals from enabled incoming synapses after
-                their weights have been applied.
-            external_input: Value supplied by the environment. Only neuron
-                implementations that explicitly support external input accept it.
-
-        Returns:
-            An update that can later be committed with ``apply_update``.
-
-        A network runner is expected to call this method. Application code
-        normally interacts with the higher-level network API instead.
-        """
+        """Calculate and validate the next state without mutating the neuron."""
         raise NotImplementedError
 
     def apply_update(self, update: NeuronUpdate) -> None:
-        """Commit a previously prepared update.
-
-        Args:
-            update: Result returned by this neuron's ``prepare_update`` method.
-        """
-        self._state = finite_float(update.state, "update.state")
+        """Commit the validated public output of a prepared update."""
+        self._output = update.output
 
     def reset(self) -> None:
-        """Restore the public state supplied to the constructor."""
-        self._state = self._initial_state
+        """Restore the constructor-provided public output."""
+        self._output = self._initial_output

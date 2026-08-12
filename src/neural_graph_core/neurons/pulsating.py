@@ -1,47 +1,42 @@
-"""Autonomous neuron that produces periodic pulses."""
+"""Autonomous internal neuron that produces periodic binary spikes."""
 
-from .base import Neuron, NeuronUpdate, finite_float
+from dataclasses import dataclass
+
+from ..step_state import PulsatingStepState
+from .base import Neuron, NeuronUpdate
+from .base_values import binary_spike
 from .roles import NeuronRole
 
 
+@dataclass(frozen=True, slots=True)
+class PulsatingInternalState:
+    """Validated binary spike and local timer prepared for commit."""
+
+    spike: int
+    ticks_since_spike: int
+
+
 class PulsatingNeuron(Neuron):
-    """Generate a pulse according to an independent local timer.
+    """Generate binary spikes using an independent local timer.
 
-    The timer belongs to the neuron and does not use an absolute network tick.
-    Different instances can therefore have independent periods and phases, and
-    a new instance can be inserted into an already running network.
-
-    Every update increments ``ticks_since_spike``. When it reaches
-    ``period_ticks``, the neuron emits ``spike_value`` and resets its timer to
-    zero. On other ticks it emits ``resting_value``. Incoming synapses and
-    external input are forbidden because the neuron is autonomous.
+    The timer does not depend on ``NetworkRunner.tick``. A spike generated on
+    tick N is transmitted through outgoing synapses on tick N+1, like the spike
+    of any other internal neuron.
 
     Args:
         id: Identifier that must be unique within one network.
-        state: Initial public output value.
-        period_ticks: Positive number of local updates between pulses.
-        ticks_since_spike: Initial phase in the range
+        period_ticks: Positive number of local updates between spikes.
+        ticks_since_spike: Initial timer phase in
             ``0 <= value < period_ticks``.
-        spike_value: Public state emitted on a pulse.
-        resting_value: Public state emitted between pulses.
-
-    Example:
-        Emit a pulse on every third update::
-
-            neuron = PulsatingNeuron(id="clock", period_ticks=3)
-            for _ in range(3):
-                update = neuron.prepare_update()
-                neuron.apply_update(update)
-            assert neuron.state == 1.0
-            assert neuron.ticks_since_spike == 0
+        spike: Initial committed binary output restored by ``reset``.
     """
 
     __slots__ = (
         "_period_ticks",
         "_ticks_since_spike",
         "_initial_ticks_since_spike",
-        "_spike_value",
-        "_resting_value",
+        "_spike",
+        "_initial_spike",
     )
 
     def __init__(
@@ -49,12 +44,9 @@ class PulsatingNeuron(Neuron):
         *,
         id: str,
         period_ticks: int,
-        state: float = 0.0,
         ticks_since_spike: int = 0,
-        spike_value: float = 1.0,
-        resting_value: float = 0.0,
+        spike: int = 0,
     ) -> None:
-        super().__init__(id=id, state=state)
         if (
             not isinstance(period_ticks, int)
             or isinstance(period_ticks, bool)
@@ -67,46 +59,38 @@ class PulsatingNeuron(Neuron):
             raise ValueError("ticks_since_spike must be an integer")
         if not 0 <= ticks_since_spike < period_ticks:
             raise ValueError("ticks_since_spike must be in [0, period_ticks)")
+        converted_spike = binary_spike(spike)
 
+        super().__init__(id=id, output=float(converted_spike))
         self._period_ticks = period_ticks
         self._ticks_since_spike = ticks_since_spike
         self._initial_ticks_since_spike = ticks_since_spike
-        self._spike_value = finite_float(spike_value, "spike_value")
-        self._resting_value = finite_float(resting_value, "resting_value")
+        self._spike = converted_spike
+        self._initial_spike = converted_spike
 
     @property
     def period_ticks(self) -> int:
-        """Return the number of local updates between pulses."""
         return self._period_ticks
 
     @property
     def ticks_since_spike(self) -> int:
-        """Return the current value of the private local timer."""
         return self._ticks_since_spike
 
     @property
-    def spike_value(self) -> float:
-        """Return the state emitted when the timer reaches the period."""
-        return self._spike_value
-
-    @property
-    def resting_value(self) -> float:
-        """Return the state emitted between pulses."""
-        return self._resting_value
+    def spike(self) -> int:
+        """Return the currently committed binary pulse."""
+        return self._spike
 
     @property
     def role(self) -> NeuronRole:
-        """Return the ``pulsating`` role."""
         return "pulsating"
 
     @property
     def accepts_incoming(self) -> bool:
-        """Return ``False`` because the pulse generator is autonomous."""
         return False
 
     @property
     def emits_outgoing(self) -> bool:
-        """Return ``True`` because generated pulses feed other neurons."""
         return True
 
     def prepare_update(
@@ -115,34 +99,40 @@ class PulsatingNeuron(Neuron):
         weighted_input: float = 0.0,
         external_input: float | None = None,
     ) -> NeuronUpdate:
-        """Prepare the next output value and local timer state.
-
-        The method does not mutate the neuron. The next timer value is stored
-        in ``NeuronUpdate.internal_state`` and committed by ``apply_update``.
-
-        Raises:
-            ValueError: If a weighted or external input is supplied.
-        """
+        """Advance the timer and prepare exactly one binary pulse state."""
         if weighted_input != 0.0:
             raise ValueError("PulsatingNeuron cannot receive weighted input")
         if external_input is not None:
             raise ValueError("PulsatingNeuron cannot receive external input")
 
         next_ticks = self._ticks_since_spike + 1
-        if next_ticks >= self._period_ticks:
-            return NeuronUpdate(self._spike_value, 0)
-        return NeuronUpdate(self._resting_value, next_ticks)
+        spike = int(next_ticks >= self._period_ticks)
+        if spike:
+            next_ticks = 0
+        state = PulsatingInternalState(
+            spike=spike,
+            ticks_since_spike=next_ticks,
+        )
+        return NeuronUpdate(
+            output=float(spike),
+            internal_state=state,
+            step_state=PulsatingStepState(
+                spike=spike,
+                ticks_since_spike=next_ticks,
+            ),
+        )
 
     def apply_update(self, update: NeuronUpdate) -> None:
-        """Commit both the public state and the private local timer."""
-        if not isinstance(update.internal_state, int):
-            raise TypeError("PulsatingNeuron update requires an integer internal state")
-        if not 0 <= update.internal_state < self._period_ticks:
-            raise ValueError("PulsatingNeuron internal state is out of range")
+        """Commit a binary pulse and timer validated by ``prepare_update``."""
+        state = update.internal_state
+        if not isinstance(state, PulsatingInternalState):
+            raise TypeError("PulsatingNeuron requires PulsatingInternalState")
         super().apply_update(update)
-        self._ticks_since_spike = update.internal_state
+        self._spike = state.spike
+        self._ticks_since_spike = state.ticks_since_spike
 
     def reset(self) -> None:
-        """Restore the initial public state and constructor-defined phase."""
+        """Restore the constructor-provided binary spike and timer phase."""
         super().reset()
+        self._spike = self._initial_spike
         self._ticks_since_spike = self._initial_ticks_since_spike

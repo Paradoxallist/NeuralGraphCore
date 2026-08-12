@@ -1,104 +1,50 @@
 # NeuralGraphCore
 
-NeuralGraphCore is a small, pure-Python foundation for graph-based and
-recurrent neural systems. It provides reusable neuron types, directed weighted
-synapses, graph validation, and deterministic synchronous execution.
+NeuralGraphCore is a small, deterministic, pure-Python simulation core for
+stateful graph-based and recurrent neural networks. It provides integrate-and-
+fire neurons, analog environment inputs, binary internal signaling, directed
+weighted synapses, validated topology, and synchronous tick execution.
 
-The library is intended to be shared by multiple projects so that each project
-can focus on its own learning rules, growth logic, environment integration, and
-experiments instead of rebuilding network mechanics.
-
-For the exact tick-by-tick behavior, read [NETWORK_SPEC.md](NETWORK_SPEC.md).
-That document is the source of truth for network semantics.
+Read [NETWORK_SPEC.md](NETWORK_SPEC.md) for the exact network physics. That
+document is authoritative for tick timing, signal propagation, potential
+integration, thresholding, reset rules, and atomic commit behavior.
 
 ## Scope
 
-NeuralGraphCore currently contains:
+The library contains:
 
-- input, hidden/stateful, output, and autonomous pulsating neurons;
-- directed weighted synapses;
-- a validated network container;
-- synchronous single-step and multi-step execution;
-- immutable step-result snapshots;
-- reset support for dynamic neuron state and runner time.
+- analog `InputNeuron` sources;
+- binary integrate-and-fire `StatefulNeuron` nodes;
+- sink-only integrate-and-fire `OutputNeuron` readouts;
+- autonomous binary `PulsatingNeuron` sources;
+- mutable weighted synapses with immutable endpoints;
+- validated graph topology;
+- synchronous `step`, sequential `run`, diagnostic snapshots, and reset.
 
-NeuralGraphCore intentionally does not contain:
+It intentionally excludes learning, plasticity algorithms, DNA/genomes, growth,
+visualization, serialization, environment adapters, experiment frameworks,
+multiprocessing, training, and vector-valued state.
 
-- training algorithms or optimizers;
-- backpropagation or automatic differentiation;
-- datasets, loss functions, or task-specific metrics;
-- DNA, genome, mutation, crossover, or growth systems;
-- visualization or user-interface code;
-- environment-specific input/output adapters;
-- experiment-specific behavior.
+## Installation
 
-Those features belong in projects that depend on this library.
-
-## Requirements
-
-- Python 3.11 or newer
-- no runtime dependencies outside the Python standard library
-
-## Local installation
-
-Install the repository in editable mode while developing both the library and
-a dependent project:
+NeuralGraphCore requires Python 3.11 or newer and has no runtime dependencies
+outside the standard library.
 
 ```bash
 python -m pip install -e /path/to/NeuralGraphCore
 ```
 
-On Windows, for example:
+Run the regression suite with:
 
-```powershell
-python -m pip install -e C:\Projects\NeuralGraphCore
+```bash
+python -m unittest discover -s tests -v
 ```
 
-After installation, changes made in the NeuralGraphCore source directory are
-immediately visible to the dependent environment.
-
-## Public API
-
-The primary classes can be imported from the package root:
+## Basic network
 
 ```python
 from neural_graph_core import (
-    InputNeuron,
-    Network,
-    NetworkRunner,
-    Neuron,
-    NeuronRole,
-    OutputNeuron,
-    PulsatingNeuron,
-    StatefulNeuron,
-    StepResult,
-    Synapse,
-)
-```
-
-### Neuron implementations
-
-`InputNeuron`
-: Receives a value from the external environment. It cannot have incoming
-  synapses. A missing value on a step is treated as `0.0`.
-
-`StatefulNeuron`
-: General-purpose hidden neuron. It supports incoming links, outgoing links,
-  recurrent loops, and self-loops. Its update is
-  `activation(weighted_input + bias)`.
-
-`OutputNeuron`
-: Computes values like a `StatefulNeuron`, appears in `StepResult.outputs`, and
-  cannot have outgoing synapses.
-
-`PulsatingNeuron`
-: Autonomous periodic source with a private local timer. It accepts neither
-  synaptic nor external input.
-
-## Creating and running a network
-
-```python
-from neural_graph_core import (
+    HardReset,
     InputNeuron,
     Network,
     NetworkRunner,
@@ -107,151 +53,218 @@ from neural_graph_core import (
 )
 
 network = Network()
-
 sensor = network.add_neuron(InputNeuron(id="sensor"))
 hidden = network.add_neuron(
     StatefulNeuron(
         id="hidden",
-        bias=0.1,
-        activation=lambda value: max(0.0, value),
+        threshold=1.0,
+        retention=0.5,
+        reset=HardReset(),
     )
 )
-output = network.add_neuron(OutputNeuron(id="output"))
+output = network.add_neuron(
+    OutputNeuron(id="action", threshold=1.0, retention=0.0)
+)
 
-network.connect(sensor, hidden, weight=0.5)
+network.connect(sensor, hidden, weight=1.0)
 network.connect(hidden, output, weight=1.0)
 
 runner = NetworkRunner(network)
-result = runner.step(inputs={"sensor": 1.0})
 
-print(result.tick)
-print(result.states)
-print(result.outputs)
+tick_1 = runner.step({"sensor": 1.0})
+assert tick_1.states["hidden"].spike == 1
+assert tick_1.outputs["action"].spike == 0
+
+tick_2 = runner.step({})
+assert tick_2.outputs["action"].spike == 1
 ```
 
-External input is visible to directly connected neurons during the current
-tick. Newly calculated internal neuron states are transmitted only on the next
-tick. Consequently, in the example above `hidden` reacts during the first
-step, while `output` sees that new hidden state during the second step.
+External input reaches a directly connected neuron during the current tick. A
+new internal spike is transmitted only during the following tick.
 
-## Adding synapses
+## Integrate-and-fire behavior
 
-`connect` accepts either registered neuron instances or their identifiers:
+`StatefulNeuron` and `OutputNeuron` use:
 
-```python
-network.connect(sensor, hidden, weight=0.5)
-network.connect("hidden", "output", weight=1.0)
+```text
+candidate = previous_potential * retention + incoming_signal
+spike = 1 if candidate >= threshold else 0
 ```
 
-A pre-built `Synapse` can also be added instead of calling `connect`:
+When no spike occurs, `potential` becomes `candidate`. After a spike, the
+configured reset rule selects the retained potential. A neuron emits at most
+one binary spike per tick.
 
 ```python
-from neural_graph_core import Synapse
+neuron = StatefulNeuron(
+    id="memory",
+    threshold=1.0,
+    retention=0.8,
+    potential=0.25,
+    spike=0,
+)
 
-network.add_synapse(
-    Synapse(
-        source_id="sensor",
-        target_id="hidden",
-        weight=-0.25,
-        enabled=True,
-    )
+print(neuron.potential)
+print(neuron.spike)
+print(neuron.output)  # float(neuron.spike)
+```
+
+Initial `potential` and `spike` are independent committed values. They are not
+required to satisfy the threshold relation.
+
+## Reset rules
+
+Exactly one explicit reset rule is configured per stateful/output neuron:
+
+```python
+from neural_graph_core import (
+    FixedResidualReset,
+    HardReset,
+    PercentageReset,
+    SubtractiveReset,
+)
+
+HardReset()                       # potential = 0.0
+SubtractiveReset()                # potential = candidate - threshold
+FixedResidualReset(value=0.2)     # potential = 0.2
+PercentageReset(fraction=0.25)    # potential = candidate * 0.25
+```
+
+`FixedResidualReset.value` must be finite. `PercentageReset.fraction` must be
+between 0 and 1 inclusive.
+
+## Signals and synapses
+
+Every neuron has a read-only `output` used by synapses:
+
+```text
+contribution = source.output * synapse.weight
+```
+
+- `InputNeuron.output` is an analog float supplied by the environment.
+- `StatefulNeuron.output` and `OutputNeuron.output` are binary `0.0` or `1.0`.
+- `PulsatingNeuron.output` is a binary `0.0` or `1.0`.
+
+Synapse endpoints never change because `(source_id, target_id)` is its network
+key. Weight and enabled state can be edited between ticks:
+
+```python
+synapse = network.connect("sensor", "hidden", weight=0.5)
+synapse.weight = -1.25
+synapse.enabled = False
+```
+
+Weights may be any finite float. A disabled synapse contributes zero. Only one
+synapse may exist for an ordered endpoint pair; a stateful self-loop is valid.
+
+## Pulsating neuron
+
+```python
+from neural_graph_core import PulsatingNeuron
+
+clock = PulsatingNeuron(
+    id="clock",
+    period_ticks=3,
+    ticks_since_spike=0,
+    spike=0,
 )
 ```
 
-Only one synapse may exist for an ordered `(source_id, target_id)` pair.
-Positive and negative weights are both supported. A disabled synapse remains
-in the topology but transmits no signal.
+The timer is local to the neuron and independent of `NetworkRunner.tick`.
+`PulsatingNeuron` emits a binary spike when its timer reaches the period. It
+accepts neither incoming synapses nor external input.
 
-## Running a sequence
+## StepResult diagnostics
 
-Pass one input mapping per tick to `run`:
+`step()` returns immutable typed snapshots:
+
+```python
+result = runner.step({"sensor": 0.75})
+
+print(result.states["sensor"].value)
+
+hidden_state = result.states["hidden"]
+print(hidden_state.incoming_signal)
+print(hidden_state.candidate)
+print(hidden_state.potential)
+print(hidden_state.spike)
+
+output_state = result.outputs["action"]
+print(output_state.potential, output_state.spike)
+```
+
+Snapshot types are `InputStepState`, `StatefulStepState`, and
+`PulsatingStepState`. `StepResult.outputs` contains full stateful snapshots for
+output-role neurons, not only their spike values.
+
+## run and reset
 
 ```python
 results = runner.run([
     {"sensor": 1.0},
     {"sensor": 0.5},
-    {},
+    None,
 ])
 
-for result in results:
-    print(result.tick, result.outputs)
-```
-
-`runner.run(sequence)` is equivalent to calling `runner.step(inputs)` for each
-item in the same order. `None` and `{}` both represent a step on which every
-known input defaults to zero.
-
-## Pulsating neuron
-
-```python
-from neural_graph_core import Network, PulsatingNeuron
-
-network = Network()
-clock = network.add_neuron(
-    PulsatingNeuron(
-        id="clock",
-        period_ticks=3,
-        ticks_since_spike=0,
-        spike_value=1.0,
-        resting_value=0.0,
-    )
-)
-```
-
-The timer is local to `clock`; it does not depend on the runner's absolute tick
-number. `ticks_since_spike` can set an initial phase. A pulse committed during
-one tick is available to downstream neurons during the following tick.
-
-## Resetting execution
-
-```python
 runner.reset()
 ```
 
-Resetting:
+`run(sequence)` is equivalent to successive `step` calls. Missing known input
+values become `0.0`; unknown IDs are errors.
 
-- sets `runner.tick` back to `0`;
-- restores each neuron's constructor-provided initial state;
-- restores each `PulsatingNeuron` timer to its constructor-provided phase;
-- preserves all neurons, synapses, weights, enabled flags, biases, activation
-  functions, and other static parameters.
+`reset()` restores the runner tick counter and each neuron's constructor-
+provided dynamic state, including potential, spike, input value, and pulsating
+timer phase. It does not change topology, weights, enabled flags, thresholds,
+retention values, reset rules, or periods.
 
-## Inspecting the graph
-
-```python
-neuron = network.get_neuron("hidden")
-synapse = network.get_synapse("sensor", "hidden")
-
-incoming = network.incoming("hidden")
-outgoing = network.outgoing("hidden")
-
-all_neurons = network.neurons
-all_synapses = network.synapses
-```
-
-`network.neurons` and `network.synapses` are read-only mapping views. Structural
-changes must go through `Network` methods so the graph invariants remain valid.
-
-Removing a neuron automatically removes every synapse connected to it:
+## Graph API
 
 ```python
-network.remove_neuron("hidden")
+network.add_neuron(neuron)
+network.remove_neuron(neuron_or_id)
+network.get_neuron("hidden")
+
+network.add_synapse(synapse)
+network.connect(source_or_id, target_or_id, weight=1.0)
+network.disconnect(source_or_id, target_or_id)
+network.get_synapse(source_or_id, target_or_id)
+
+network.incoming(neuron_or_id)
+network.outgoing(neuron_or_id)
 ```
 
-## Error behavior
+Neuron IDs are unique within a network. Removing a neuron automatically removes
+all connected synapses. `InputNeuron` and `PulsatingNeuron` cannot receive
+synapses; `OutputNeuron` cannot emit them.
 
-The library rejects, among other invalid operations:
+## Public imports
 
-- duplicate neuron identifiers in one network;
-- duplicate synapse endpoint pairs;
-- synapses referencing unknown neurons;
-- incoming synapses targeting an `InputNeuron` or `PulsatingNeuron`;
-- outgoing synapses originating from an `OutputNeuron`;
-- external input for an unknown or non-input neuron;
-- NaN and infinite state, input, bias, activation-result, or weight values.
+The main API is available from the package root:
 
-## Behavioral specification
+```python
+from neural_graph_core import (
+    FixedResidualReset,
+    HardReset,
+    InputNeuron,
+    InputStepState,
+    Network,
+    NetworkRunner,
+    Neuron,
+    NeuronRole,
+    NeuronStepState,
+    OutputNeuron,
+    PercentageReset,
+    PulsatingNeuron,
+    PulsatingStepState,
+    ResetRule,
+    StatefulNeuron,
+    StatefulStepState,
+    StepResult,
+    SubtractiveReset,
+    Synapse,
+)
+```
 
-Read [NETWORK_SPEC.md](NETWORK_SPEC.md) before relying on timing, recurrence,
-self-loops, atomicity, or reset behavior. Projects using NeuralGraphCore should
-not reimplement or reinterpret those rules.
+Before depending on timing or recurrence behavior, read
+[NETWORK_SPEC.md](NETWORK_SPEC.md). Dependent projects should use
+`NetworkRunner` rather than reimplementing tick semantics.

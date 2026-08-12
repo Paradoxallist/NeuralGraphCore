@@ -1,42 +1,43 @@
-"""Neuron used to pass external values into a network."""
+"""Analog external source used to pass environment values into a network."""
 
-from .base import Neuron, NeuronUpdate, finite_float
+from ..step_state import InputStepState
+from .base import Neuron, NeuronUpdate
+from .base_values import finite_float
 from .roles import NeuronRole
 
 
 class InputNeuron(Neuron):
-    """A network input whose value is supplied exclusively by the environment.
+    """A strict analog ``environment -> network`` boundary.
 
-    ``InputNeuron`` represents the ``environment -> network`` boundary. It
-    rejects incoming synapses and accepts one external value on every tick.
-    The value becomes its next state without a bias or activation function.
+    Input values are supplied through ``NetworkRunner.step`` and are available
+    to downstream neurons during that same tick. Missing known inputs become
+    ``0.0``. Incoming synapses are forbidden.
 
-    Example:
-        Manually prepare and commit an external value::
-
-            neuron = InputNeuron(id="temperature")
-            update = neuron.prepare_update(external_input=0.75)
-            neuron.apply_update(update)
-            assert neuron.state == 0.75
-
-        A future network runner will perform these calls automatically.
+    Args:
+        id: Identifier that must be unique within one network.
+        value: Initial analog value restored by ``reset``.
     """
 
     __slots__ = ()
 
+    def __init__(self, *, id: str, value: float = 0.0) -> None:
+        super().__init__(id=id, output=finite_float(value, "value"))
+
+    @property
+    def value(self) -> float:
+        """Return the currently committed analog external value."""
+        return self._output
+
     @property
     def role(self) -> NeuronRole:
-        """Return the ``input`` role."""
         return "input"
 
     @property
     def accepts_incoming(self) -> bool:
-        """Return ``False`` because an input cannot be a synapse target."""
         return False
 
     @property
     def emits_outgoing(self) -> bool:
-        """Return ``True`` because the external value can feed other neurons."""
         return True
 
     def prepare_update(
@@ -45,19 +46,14 @@ class InputNeuron(Neuron):
         weighted_input: float = 0.0,
         external_input: float | None = None,
     ) -> NeuronUpdate:
-        """Prepare an external value as the next public state.
-
-        Args:
-            weighted_input: Must remain ``0.0`` because incoming synapses are
-                forbidden.
-            external_input: Required finite numeric value from the environment.
-
-        Raises:
-            ValueError: If a weighted signal is supplied, the external value is
-                missing, or the external value is not finite.
-        """
+        """Prepare and validate the external value for the current tick."""
         if weighted_input != 0.0:
             raise ValueError("InputNeuron cannot receive weighted input")
         if external_input is None:
             raise ValueError("InputNeuron requires an external input")
-        return NeuronUpdate(finite_float(external_input, "external_input"))
+        value = finite_float(external_input, "external_input")
+        return NeuronUpdate(
+            output=value,
+            internal_state=None,
+            step_state=InputStepState(value=value),
+        )

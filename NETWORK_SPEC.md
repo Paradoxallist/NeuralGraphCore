@@ -1,94 +1,127 @@
 # NeuralGraphCore Network Semantics
 
-This document is the source of truth for the current behavior of
-NeuralGraphCore. It answers the question:
+This document is the authoritative specification of NeuralGraphCore network
+physics. It answers:
 
 > What exactly happens on the next tick?
 
-The specification describes the implemented model. Features not listed here,
-including threshold firing, membrane-potential retention, learning, and
-multiple spike-reset policies, are not currently part of NeuralGraphCore.
+## State and signals
 
-## Values and time
+Each neuron exposes a read-only `output: float`, which is the only value a
+synapse transmits.
 
-Every neuron exposes one committed `float` state. Network execution advances in
-discrete synchronous ticks through `NetworkRunner.step()`.
+| Neuron | Internal/public state | Synaptic output |
+|---|---|---|
+| `InputNeuron` | analog `value: float` | the analog value |
+| `StatefulNeuron` | `potential: float`, `spike: int` | binary spike as `0.0` or `1.0` |
+| `OutputNeuron` | same as `StatefulNeuron` | binary spike; outgoing links are forbidden |
+| `PulsatingNeuron` | local timer and `spike: int` | binary spike as `0.0` or `1.0` |
 
-The runner has a completed-tick counter:
+Only input neurons are analog signal sources. Every built-in internal source is
+binary.
 
-- a new runner starts at `tick == 0`;
-- the first successful `step()` produces `StepResult.tick == 1`;
-- the counter advances only after a successful commit;
-- `reset()` returns the counter to `0`.
+## StatefulNeuron
 
-## Neuron roles
+`StatefulNeuron` is a discrete integrate-and-fire node. It supports incoming
+and outgoing synapses, recurrent loops, and self-loops.
 
-The built-in `NeuronRole` type contains:
+Its configuration is:
 
-```python
-Literal["input", "hidden", "output", "pulsating"]
-```
+- positive finite `threshold`;
+- finite `retention` in `[0, 1]`;
+- exactly one `ResetRule`;
+- initial finite `potential`;
+- initial binary integer `spike` in `{0, 1}`.
 
-### InputNeuron
+Initial potential and spike are independent committed values. An initial spike
+of 1 does not require the initial potential to equal or exceed the threshold.
 
-An `InputNeuron` is the strict `environment -> network` boundary.
-
-- It receives its value only from `NetworkRunner.step(inputs=...)`.
-- It cannot be the target of a synapse.
-- It may be the source of a synapse.
-- A missing known input value is treated as `0.0`.
-- A supplied unknown ID raises `KeyError`.
-- A supplied ID belonging to a non-input neuron raises `ValueError`.
-- Its current external value is available to downstream neurons during the
-  same tick.
-- Its committed state after the tick equals the supplied value or default zero.
-
-### StatefulNeuron
-
-A `StatefulNeuron` is the general-purpose hidden and recurrent node.
-
-- It may have incoming and outgoing synapses.
-- It may participate in recurrent loops.
-- It may have a self-loop.
-- It does not accept external input.
-- It calculates its next state as:
+For one tick:
 
 ```text
-total = weighted_input + bias
-next_state = activation(total)
+incoming_signal = sum(source_output * synapse.weight)
+candidate = previous_potential * retention + incoming_signal
 ```
 
-`activation` is a callable receiving one `float` and returning a value
-convertible to a finite `float`. The default activation is the identity
-function.
+If `candidate < threshold`:
 
-A stateful neuron's previous state does not implicitly enter its calculation.
-Memory is expressed structurally through a self-loop or another recurrent path.
+```text
+next_spike = 0
+next_potential = candidate
+```
 
-### OutputNeuron
+If `candidate >= threshold`:
 
-An `OutputNeuron` is the strict `network -> environment` boundary.
+```text
+next_spike = 1
+next_potential = reset_rule(candidate, threshold)
+```
 
-- It inherits the calculation performed by `StatefulNeuron`.
-- It may be the target of synapses.
-- It cannot be the source of a synapse.
-- Its committed state appears in both `StepResult.states` and
-  `StepResult.outputs`.
+At most one spike occurs per tick. A reset may leave potential at or above the
+threshold, but that residual can produce another spike only on a later tick.
+Potential is private neuron state and is never transmitted through a synapse.
 
-This sink-only rule deliberately separates external readout from recurrent
-internal nodes. Use a `StatefulNeuron` when an internally propagated value is
-also required.
+## Reset rules
 
-### PulsatingNeuron
+Four immutable reset configurations are built in.
 
-A `PulsatingNeuron` is an autonomous periodic source.
+### HardReset
 
-- It cannot be the target of a synapse.
-- It does not accept external input.
-- It may be the source of synapses.
-- It uses its own `ticks_since_spike` timer, not `NetworkRunner.tick`.
-- `period_ticks` must be a positive integer.
-- The timer phase is local and can be selected at construction time.
+```text
+next_potential = 0.0
+```
+
+### SubtractiveReset
+
+```text
+next_potential = candidate - threshold
+```
+
+### FixedResidualReset
+
+```text
+next_potential = configured finite value
+```
+
+### PercentageReset
+
+```text
+next_potential = candidate * fraction
+```
+
+`fraction` is finite and belongs to `[0, 1]`. A neuron owns exactly one reset-
+rule object; reset modes are not combined.
+
+## InputNeuron
+
+`InputNeuron` is a strict analog `environment -> network` source.
+
+- Values arrive only through `NetworkRunner.step(inputs=...)`.
+- It cannot receive synapses and may emit them.
+- A missing registered input value becomes `0.0`.
+- An unknown input ID or a non-input ID raises an error.
+- A finite float is accepted; input is not restricted to binary values.
+- Its current-tick value is immediately available to downstream neurons.
+
+For input `0.5` and synaptic weight `0.8`, the current-tick contribution is
+`0.4`.
+
+## OutputNeuron
+
+`OutputNeuron` inherits the complete integrate-and-fire model from
+`StatefulNeuron`, including potential, threshold, retention, reset, and binary
+spike. It may receive synapses, cannot emit them, and its full
+`StatefulStepState` appears in `StepResult.outputs`. It is not a linear readout.
+
+## PulsatingNeuron
+
+`PulsatingNeuron` is an autonomous binary source with a local timer.
+
+- It cannot receive synapses or external input and may emit synapses.
+- It does not consult the absolute runner tick.
+- `period_ticks` is a positive integer.
+- `ticks_since_spike` selects a local initial phase.
+- `spike` is always integer 0 or 1.
 
 For each update:
 
@@ -96,224 +129,168 @@ For each update:
 next_ticks = ticks_since_spike + 1
 
 if next_ticks >= period_ticks:
-    next_state = spike_value
+    next_spike = 1
     next_ticks = 0
 else:
-    next_state = resting_value
+    next_spike = 0
 ```
 
-Both the new public state and new timer are committed together. A pulse newly
-created on tick N becomes an internal source signal on tick N+1.
+A spike generated on tick N is visible to downstream neurons on tick N+1.
 
-## Synapses
+## Synapse
 
-A `Synapse` is a directed connection with:
-
-- `source_id`;
-- `target_id`;
-- a finite `weight`;
-- an `enabled` flag.
-
-For an enabled synapse, its contribution is:
+A synapse is a directed connection. Its contribution when enabled is:
 
 ```text
-source_signal * weight
+source.output * weight
 ```
 
-Positive weights increase the target's aggregated input. Negative weights
-decrease it and may make the aggregate negative. A disabled synapse contributes
-exactly zero and otherwise remains part of the topology.
+- `source_id` and `target_id` are immutable.
+- Their ordered pair uniquely identifies the synapse within one network.
+- `weight` is mutable between ticks and may be any finite float.
+- `enabled` is mutable between ticks and must be a boolean.
+- A disabled synapse contributes exactly zero.
+- Positive and negative weights are supported.
+- A self-loop is an ordinary synapse.
+- Parallel synapses for the same ordered pair are forbidden.
 
-Synapses are immutable. Their endpoint pair is the network key, and at most one
-synapse may exist for an ordered `(source_id, target_id)` pair.
+## Synchronous tick phases
 
-A self-loop is an ordinary synapse whose source and target IDs are equal. It is
-valid only if that neuron permits both incoming and outgoing connections. Among
-the built-in implementations, this means a `StatefulNeuron` can have a
-self-loop, while input, output, and pulsating neurons cannot.
+`NetworkRunner.step(inputs)` follows these phases.
 
-## Network structure
+### 1. Snapshot topology and validate inputs
 
-`Network` owns neuron and synapse registration.
+The runner copies the external input mapping and snapshots current neuron and
+synapse iteration collections. Every supplied ID must belong to a registered
+input neuron. Missing input values default to zero.
 
-- A neuron ID is unique within one `Network` instance.
-- The same ID may appear in a different network.
-- Both endpoints must be registered before a synapse is added.
-- Passing a neuron object to `connect` requires that exact object to be
-  registered, not merely another object with the same ID.
-- Removing a neuron automatically removes every connected synapse.
-- `neurons` and `synapses` expose read-only mapping views.
+### 2. Prepare current-tick input updates
 
-Structural changes are made between calls to `step()`. The current
-implementation executes `step()` synchronously and does not provide mutation
-operations during a partially evaluated tick.
+Every `InputNeuron` prepares its analog value. That prepared value is used as
+the source signal during this same tick. Nothing is committed yet.
 
-## Tick semantics
+### 3. Aggregate synaptic contributions
 
-`NetworkRunner.step(inputs)` performs the following logical phases.
+For each enabled synapse, the runner chooses:
 
-### 1. Copy and validate external inputs
+- the prepared current-tick value for an `InputNeuron` source;
+- the previous committed binary `output` for any internal source.
 
-The supplied mapping is copied. Every supplied ID must identify an existing
-`InputNeuron`. Missing registered inputs receive `0.0`.
-
-No neuron state has changed at this point.
-
-### 2. Prepare current-tick input states
-
-An update is prepared for every `InputNeuron`. Its prepared value is also used
-as that input neuron's source signal during this tick.
-
-No update has been committed yet.
-
-### 3. Aggregate enabled synaptic signals
-
-Each enabled synapse contributes `source_signal * weight` to its target.
-
-The selected source signal depends on the source role:
-
-- `InputNeuron`: the external value prepared for the current tick;
-- every other neuron: its previously committed `state`.
-
-This is the central timing rule of the library:
+It multiplies that signal by the current synaptic weight and adds the result to
+the target's incoming signal.
 
 ```text
-external input transmission = current tick value
-internal neuron transmission = previous committed state
+external input transmission = current tick analog value
+internal transmission = previous committed binary spike
 ```
 
-### 4. Prepare all non-input updates
+### 4. Prepare every internal update
 
-Every non-input neuron calculates its next state from its complete aggregated
-input. Calculation order cannot affect the result because no newly calculated
-state is visible during this phase.
+Every stateful/output neuron calculates incoming signal, candidate, next spike,
+and next potential. Every pulsating neuron calculates its next timer and spike.
+No neuron is mutated during preparation.
 
-### 5. Commit all updates
+### 5. Commit
 
-Only after every update has been prepared successfully are the updates applied
-to the neurons. The runner then increments its tick counter and constructs a
-`StepResult` snapshot.
+Only after all preparations succeed are all updates committed. The runner then
+increments its completed-tick counter and returns a `StepResult`. Neuron
+insertion and traversal order cannot affect the result because all internal
+signals come from the same previous committed state.
 
-## One-synapse-per-tick propagation
+## Propagation timing example
 
-Consider:
+For unit weights, threshold 1, retention 0, and hard reset:
 
 ```text
-Input --1.0--> A --1.0--> B
+Input -> A -> B
 ```
 
-where A and B are linear `StatefulNeuron` instances initialized to zero.
-
-| Completed tick | External Input | A committed state | B committed state |
+| Completed tick | Input | A spike | B spike |
 |---:|---:|---:|---:|
-| 0 | - | 0.0 | 0.0 |
-| 1 | 1.0 | 1.0 | 0.0 |
-| 2 | 0.0 | 0.0 | 1.0 |
-| 3 | 0.0 | 0.0 | 0.0 |
+| 0 | - | 0 | 0 |
+| 1 | 1.0 | 1 | 0 |
+| 2 | 0.0 | 0 | 1 |
+| 3 | 0.0 | 0 | 0 |
 
-Input reaches A on tick 1. A's newly calculated state does not reach B until
-tick 2. Internal activity therefore crosses at most one synapse per tick.
+Current external input reaches A immediately. A's newly generated spike crosses
+the A-to-B synapse only on the next tick.
 
-## Self-loop example
+## Retention example
 
-Consider a linear neuron A with initial state `1.0`, zero bias, and a self-loop
-of weight `0.5`:
+With threshold 1, retention 0.5, no incoming signal, and initial potential 0.8:
 
-```text
-     0.5
-    +---+
-    |   v
-    +-- A
-```
-
-| Completed tick | Previous A | Self-loop input | New A |
+| Completed tick | Candidate | Spike | Retained potential |
 |---:|---:|---:|---:|
-| 0 | - | - | 1.0 |
-| 1 | 1.0 | 0.5 | 0.5 |
-| 2 | 0.5 | 0.25 | 0.25 |
-| 3 | 0.25 | 0.125 | 0.125 |
+| 1 | 0.4 | 0 | 0.4 |
+| 2 | 0.2 | 0 | 0.2 |
+| 3 | 0.1 | 0 | 0.1 |
 
-The value calculated for A never feeds back into the calculation of the same
-tick. Only the previously committed state crosses the self-loop.
+## Self-loop
 
-## Recurrent-loop example
+A self-loop uses the previous committed spike. A spike newly generated by A on
+tick N cannot affect A's candidate on tick N; it becomes a self-loop source
+only on tick N+1.
 
-Consider two linear stateful neurons with A initialized to `1.0`, B initialized
-to `0.0`, and unit-weight connections in both directions:
+## Recurrent loop
 
-```text
-A --1.0--> B
-A <--1.0-- B
-```
+For two hard-reset neurons with threshold 1, retention 0, unit bidirectional
+weights, and initial committed spikes A=1 and B=0:
 
-| Completed tick | A | B |
-|---:|---:|
-| 0 | 1.0 | 0.0 |
-| 1 | 0.0 | 1.0 |
-| 2 | 1.0 | 0.0 |
-| 3 | 0.0 | 1.0 |
-| 4 | 1.0 | 0.0 |
+| Completed tick | A spike | B spike |
+|---:|---:|---:|
+| 0 | 1 | 0 |
+| 1 | 0 | 1 |
+| 2 | 1 | 0 |
+| 3 | 0 | 1 |
 
-Both next states are calculated from the same previous committed snapshot, so
-the alternating sequence is independent of neuron insertion order.
+## Atomicity contract
 
-## Atomicity
+All calculations and validation belong in `prepare_update`. The contract is:
 
-The runner prepares all neuron updates before applying any of them. If input
-validation, signal aggregation, or any neuron's `prepare_update` fails:
+> A valid `NeuronUpdate` returned by `prepare_update` must be safe to commit.
 
-- no prepared state is committed;
-- the runner tick counter does not advance;
-- the network remains in its state from before `step()`.
-
-Built-in neuron implementations validate their complete prepared update before
-commit. Custom neuron implementations must preserve the contract that
-`prepare_update` performs all potentially failing calculation and validation,
-while `apply_update` only commits an already valid update.
+If input validation, aggregation, or any preparation fails, no neuron update is
+committed, the runner tick does not advance, and the network retains its pre-
+step dynamic state. Custom neuron implementations must follow this contract.
 
 ## StepResult
 
-After a successful tick, `step()` returns a frozen `StepResult` containing:
+After commit, the runner returns detached read-only mappings of immutable
+snapshots:
 
-- `tick`: completed tick number;
-- `states`: every neuron state indexed by ID;
-- `outputs`: only states whose neuron role is `output`.
+- `InputStepState(value)`;
+- `StatefulStepState(potential, spike, incoming_signal, candidate)`;
+- `PulsatingStepState(spike, ticks_since_spike)`.
 
-The mappings are detached, read-only snapshots. Later steps and structural
-changes do not modify earlier results.
+`StepResult.states` contains every neuron. `StepResult.outputs` contains the
+full `StatefulStepState` for each output-role neuron. Later ticks cannot change
+an earlier result.
 
-## run()
+## run
 
-For an input sequence `sequence`:
+`runner.run(sequence)` is exactly successive `runner.step(inputs)` calls for
+the same sequence. Earlier successful ticks remain committed if a later item
+fails; the failing tick itself is atomic.
 
-```python
-results = runner.run(sequence)
-```
+## Reset
 
-is equivalent to:
+`NetworkRunner.reset()` restores dynamic state:
 
-```python
-results = tuple(runner.step(inputs) for inputs in sequence)
-```
+- runner tick becomes 0;
+- input values return to constructor-provided initial values;
+- stateful/output potential and spike return to constructor-provided values;
+- pulsating spike and local timer return to constructor-provided values.
 
-Execution stops immediately if one step raises an exception. Earlier successful
-steps remain committed; the failing step itself follows the atomicity rule.
+It preserves neuron identities, topology, current synapse weights and enabled
+flags, thresholds, retention values, reset rules, and periods. Constructor-
+provided dynamic state need not be zero.
 
-## Reset semantics
+## Network invariants
 
-`NetworkRunner.reset()` resets dynamic execution state:
-
-- the runner tick becomes `0`;
-- every neuron state returns to the initial `state` supplied to its constructor;
-- every `PulsatingNeuron` timer returns to its initial `ticks_since_spike`.
-
-Reset does not change static structure or configuration:
-
-- neurons are not added or removed;
-- synapses are not added or removed;
-- synapse weights and enabled flags do not change;
-- neuron IDs, roles, biases, activations, periods, spike values, and resting
-  values do not change.
-
-Reset restores constructor-provided initial values, which are not necessarily
-zero.
+- Neuron IDs are unique within one network.
+- Synapse endpoint pairs are unique within one network.
+- Both endpoints must exist before connection.
+- Input and pulsating neurons cannot receive synapses.
+- Output neurons cannot emit synapses.
+- Removing a neuron removes all connected synapses.
+- Structural changes and synapse edits occur between ticks.

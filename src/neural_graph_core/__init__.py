@@ -1,4 +1,4 @@
-"""Core building blocks for a graph-based neural network.
+"""Deterministic integrate-and-fire graph-network simulation core.
 
 Classes can be imported directly from the package::
 
@@ -12,7 +12,9 @@ Classes can be imported directly from the package::
 
     network = Network()
     sensor = network.add_neuron(InputNeuron(id="sensor"))
-    hidden = network.add_neuron(StatefulNeuron(id="hidden", bias=0.1))
+    hidden = network.add_neuron(
+        StatefulNeuron(id="hidden", threshold=1.0, retention=0.5)
+    )
     output = network.add_neuron(OutputNeuron(id="output"))
 
     network.connect(sensor, hidden, weight=0.5)
@@ -23,14 +25,25 @@ Classes can be imported directly from the package::
 """
 
 from .neurons import (
+    FixedResidualReset,
+    HardReset,
     InputNeuron,
     Neuron,
     NeuronRole,
     OutputNeuron,
+    PercentageReset,
     PulsatingNeuron,
+    ResetRule,
     StatefulNeuron,
+    SubtractiveReset,
 )
 from .network import Network
 from .runner import NetworkRunner
 from .step_result import StepResult
+from .step_state import (
+    InputStepState,
+    NeuronStepState,
+    PulsatingStepState,
+    StatefulStepState,
+)
 from .synapses import Synapse
